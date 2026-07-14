@@ -1,0 +1,104 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ohcar-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  backend:
+    name: Backend and ROS checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: web/backend/requirements.txt
+
+      - name: Install backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e web/backend
+
+      - name: Run backend tests
+        run: python -m unittest discover -s web/backend/tests -v
+
+      - name: Check ROS Python syntax
+        run: python -m py_compile web/ros/*.py
+
+      - name: Check shell syntax
+        run: bash -n web/deploy/*.sh web/ros/*.sh
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web/frontend
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Upload frontend artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-dist
+          path: web/frontend/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: Deploy to Jetson
+    needs: [backend, frontend]
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main' &&
+      vars.JETSON_CD_ENABLED == 'true'
+    runs-on: [self-hosted, Linux, ARM64, jetson]
+    environment: jetson-production
+    timeout-minutes: 20
+    steps:
+      - name: Check out approved source
+        uses: actions/checkout@v6
+        with:
+          clean: true
+
+      - name: Download verified frontend artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: frontend-dist
+          path: web/frontend/dist
+
+      - name: Deploy from the stable main checkout
+        env:
+          OHCAR_DEPLOY_ROOT: /home/jetson/ohcar
+        run: bash web/deploy/deploy_from_ci.sh

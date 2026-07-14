@@ -95,3 +95,9 @@ bash web/deploy/install_on_jetson.sh
 ```
 
 安装完成后服务地址为 `http://<Jetson-IP>:8080`。服务开机自启但保持 `IDLE`，只有操作员二次确认后才会启动对应原子节点组合。正式实车验收顺序应为：待机与急停、人工低速、建图、点位与地图保存、默认位姿定位、单点导航、路线任务；旧雷达行为和视觉跟随当前不在操作界面显示。
+
+## CI/CD
+
+GitHub Actions 会在 Pull Request 和 `main` 推送时运行后端测试、ROS 脚本检查和前端生产构建。自动部署使用 Jetson 自托管 runner，并由仓库变量 `JETSON_CD_ENABLED` 显式启用；小车存在活动 ROS 进程时部署会拒绝执行。
+
+完整配置、runner 注册、安全边界和回滚方法见 [CI/CD 配置](./docs/CICD.md)。

@@ -5,24 +5,33 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WEB_ROOT="$PROJECT_ROOT/web"
 VENV="$PROJECT_ROOT/.venv"
 CONTAINERS=(nifty_dirac sharp_maxwell)
+MODE="full"
+ENABLE_CI=false
 
-sudo install -d -m 0755 -o "$(id -un)" -g "$(id -gn)" /home/jetson/maps
+for argument in "$@"; do
+  case "$argument" in
+    --runtime-only) MODE="runtime" ;;
+    --enable-ci) ENABLE_CI=true ;;
+    *) printf 'unknown argument: %s\n' "$argument" >&2; exit 2 ;;
+  esac
+done
+
+if [[ "$MODE" == "runtime" && "$ENABLE_CI" == "true" ]]; then
+  printf '%s\n' '--runtime-only and --enable-ci cannot be combined' >&2
+  exit 2
+fi
+
+source "$WEB_ROOT/deploy/deploy_guard.sh"
+ensure_ohcar_deploy_idle
 
 if [[ ! -f "$WEB_ROOT/frontend/dist/index.html" ]]; then
   printf 'frontend build is missing: %s\n' "$WEB_ROOT/frontend/dist/index.html" >&2
   exit 1
 fi
 
-for container in "${CONTAINERS[@]}"; do
-  if [[ "$(docker inspect -f '{{.State.Running}}' "$container")" != "true" ]]; then
-    continue
-  fi
-  processes="$(docker top "$container" -eo pid,comm)"
-  if printf '%s\n' "$processes" | awk 'NR > 1 && $2 != "bash" { found = 1 } END { exit found ? 0 : 1 }'; then
-    printf 'refusing deployment: container %s has active non-shell processes\n' "$container" >&2
-    exit 1
-  fi
-done
+if [[ "$MODE" == "full" ]]; then
+  sudo install -d -m 0755 -o "$(id -un)" -g "$(id -gn)" /home/jetson/maps
+fi
 
 python3 -m venv "$VENV"
 "$VENV/bin/python" -m pip install --upgrade 'pip<26'
@@ -48,11 +57,31 @@ for container in "${CONTAINERS[@]}"; do
   fi
 done
 
-service_file="$(mktemp)"
-trap 'rm -f "$service_file"' EXIT
-sed "s|__PROJECT_ROOT__|$PROJECT_ROOT|g" "$WEB_ROOT/deploy/ohcar-web.service" > "$service_file"
-sudo install -m 0644 "$service_file" /etc/systemd/system/ohcar-web.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now ohcar-web.service
+if [[ "$MODE" == "runtime" ]]; then
+  if [[ ! -x /usr/local/sbin/ohcar-web-restart ]]; then
+    printf '%s\n' 'CI restart helper is missing; run install_on_jetson.sh --enable-ci once' >&2
+    exit 1
+  fi
+  sudo -n /usr/local/sbin/ohcar-web-restart
+else
+  temporary_directory="$(mktemp -d)"
+  trap 'rm -rf "$temporary_directory"' EXIT
+  service_file="$temporary_directory/ohcar-web.service"
+  sed "s|__PROJECT_ROOT__|$PROJECT_ROOT|g" "$WEB_ROOT/deploy/ohcar-web.service" > "$service_file"
+  sudo install -m 0644 "$service_file" /etc/systemd/system/ohcar-web.service
+
+  if [[ "$ENABLE_CI" == "true" ]]; then
+    sudo install -m 0755 -o root -g root \
+      "$WEB_ROOT/deploy/restart_ohcar_web.sh" \
+      /usr/local/sbin/ohcar-web-restart
+    sudoers_file="$temporary_directory/ohcar-cd"
+    printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/ohcar-web-restart\n' "$(id -un)" > "$sudoers_file"
+    sudo visudo -cf "$sudoers_file"
+    sudo install -m 0440 -o root -g root "$sudoers_file" /etc/sudoers.d/ohcar-cd
+  fi
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now ohcar-web.service
+fi
 
 printf 'OHCar Web installed. Service: http://0.0.0.0:8080\n'
