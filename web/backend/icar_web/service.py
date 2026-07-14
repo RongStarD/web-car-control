@@ -15,6 +15,7 @@ from .models import HealthLevel, Phase, Settings
 from .supervisor import Supervisor
 
 MAP_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+NAVIGATION_FEATURES = {"NAV_DWA", "NAV_TEB", "TASK_ROUTE"}
 
 
 class ControlService:
@@ -46,6 +47,7 @@ class ControlService:
         self._ok_count = 0
         self._clients = 0
         self._operation_task: asyncio.Task[None] | None = None
+        self._pending_map_profile: dict[str, Any] | None = None
 
     async def start(self) -> None:
         await self.manager.recover()
@@ -99,9 +101,17 @@ class ControlService:
                 await asyncio.sleep(0.12)
             except (BrokenPipeError, ConnectionResetError, RuntimeError):
                 await self.bridge.stop()
-                return
-            if next_target != previous_target:
-                await self.bridge.stop()
+            else:
+                if next_target != previous_target:
+                    await self.bridge.stop()
+        if (
+            self._pending_map_profile is not None
+            and next_target == self.settings.map_save.target
+        ):
+            await self._select_map_profile(
+                self._pending_map_profile,
+                keep_target_running=True,
+            )
 
     async def _after_transition(self, target: str | None, control_source: str) -> None:
         if target is None:
@@ -193,8 +203,48 @@ class ControlService:
             raise ValueError(config.blocked_reason or f"Feature {feature} is disabled")
         return await self._schedule_operation(
             f"Failed to start {config.label}",
-            lambda: self.manager.set_feature(feature),
+            lambda: self._start_feature(feature),
         )
+
+    async def _select_map_profile(
+        self,
+        profile: dict[str, Any],
+        *,
+        keep_target_running: bool = False,
+    ) -> None:
+        self.maps.require_files(profile)
+        target = self.settings.map_save.target
+        previous = await self.supervisor.target_status(target)
+        if not previous.running:
+            await self.supervisor.ensure_target(target)
+        try:
+            command = self.settings.map_save.activate_command_template.format(
+                yaml_path=shlex.quote(profile["yaml_path"])
+            )
+            await self.supervisor.run_once(target, "select_map", command, 12)
+        finally:
+            if not previous.running and not keep_target_running:
+                await self.supervisor.stop_target(target)
+
+    async def _start_feature(self, feature: str) -> Any:
+        if feature not in NAVIGATION_FEATURES:
+            return await self.manager.set_feature(feature)
+
+        profile = self.maps.get(self.maps.active_name())
+        target = self.settings.map_save.target
+        started_from_idle = (
+            self.manager.state.feature == "IDLE"
+            and not self.manager.state.active_components
+        )
+        self._pending_map_profile = profile
+        try:
+            return await self.manager.set_feature(feature)
+        except Exception:
+            if started_from_idle and not self.manager.state.active_components:
+                await self.supervisor.stop_target(target)
+            raise
+        finally:
+            self._pending_map_profile = None
 
     async def stop(self) -> dict[str, Any]:
         return await self._schedule_operation("Failed to stop system", self.manager.stop_all)
@@ -275,18 +325,7 @@ class ControlService:
         if self.manager.state.phase in {Phase.STARTING, Phase.STOPPING}:
             raise ValueError("Wait for the current feature transition to finish")
         profile = self.maps.get(map_name)
-        target = self.settings.map_save.target
-        previous = await self.supervisor.target_status(target)
-        if not previous.running:
-            await self.supervisor.ensure_target(target)
-        try:
-            command = self.settings.map_save.activate_command_template.format(
-                yaml_path=shlex.quote(profile["yaml_path"])
-            )
-            await self.supervisor.run_once(target, "select_map", command, 12)
-        finally:
-            if not previous.running:
-                await self.supervisor.stop_target(target)
+        await self._select_map_profile(profile)
         self.maps.set_active(map_name)
         await self.events.publish(
             {"type": "log", "level": "INFO", "message": f"Active map: {map_name}"}
@@ -306,16 +345,9 @@ class ControlService:
             command,
             self.settings.map_save.timeout_seconds,
         )
+        self.maps.require_files(profile)
         self.maps.commit(profile)
-        selection = self.settings.map_save.activate_command_template.format(
-            yaml_path=shlex.quote(profile["yaml_path"])
-        )
-        await self.supervisor.run_once(
-            self.settings.map_save.target,
-            "select_saved_map",
-            selection,
-            12,
-        )
+        await self._select_map_profile(profile, keep_target_running=True)
         self.maps.set_active(map_name)
         await self.events.publish({"type": "log", "level": "INFO", "message": f"Map saved: {map_name}"})
         return {"output": result.stdout, "map": profile, **self.map_profiles()}

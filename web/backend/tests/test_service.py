@@ -81,6 +81,11 @@ class ControlServiceTests(unittest.IsolatedAsyncioTestCase):
                     ],
                 },
             )
+            Path(directory, "floor_8.yaml").write_text(
+                "image: floor_8.pgm\nresolution: 0.05\n",
+                encoding="utf-8",
+            )
+            Path(directory, "floor_8.pgm").write_bytes(b"P5\n1 1\n255\n\x00")
             service.maps.set_active("floor_8")
             service.manager.state.feature = "TASK_ROUTE"
             service.manager.state.phase = Phase.READY
@@ -101,3 +106,66 @@ class ControlServiceTests(unittest.IsolatedAsyncioTestCase):
             initial_pose = bridge.send.await_args.args[0]
             self.assertEqual(initial_pose["type"], "initial_pose")
             self.assertEqual(initial_pose["id"], "kitchen")
+
+    async def test_navigation_reports_starting_while_map_is_synchronized(self) -> None:
+        loaded = load_settings(CONFIG)
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(
+                loaded,
+                runtime=replace(
+                    loaded.runtime,
+                    start_settle_seconds=0.01,
+                    readiness_grace_seconds=0.1,
+                ),
+                map_save=replace(loaded.map_save, host_directory=directory),
+            )
+            events = EventHub()
+            service = ControlService(
+                settings,
+                DemoSupervisor(settings),
+                DemoBridge(events.publish),
+                events,
+                demo=True,
+            )
+            service.maps.save_new_map(
+                "floor_8",
+                {"waypoints": [], "routes": []},
+            )
+            Path(directory, "floor_8.yaml").write_text(
+                "image: floor_8.pgm\nresolution: 0.05\n",
+                encoding="utf-8",
+            )
+            Path(directory, "floor_8.pgm").write_bytes(b"P5\n1 1\n255\n\x00")
+            service.maps.set_active("floor_8")
+
+            runtime = await service.set_feature("NAV_DWA")
+            self.assertEqual(runtime["phase"], Phase.STARTING.value)
+            for _ in range(80):
+                if service._operation_task is None:
+                    break
+                await asyncio.sleep(0.05)
+            self.assertEqual(service.manager.state.phase, Phase.READY)
+            self.assertIsNone(service._pending_map_profile)
+            await service.close()
+
+    async def test_save_map_rejects_success_without_map_files(self) -> None:
+        loaded = load_settings(CONFIG)
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(
+                loaded,
+                map_save=replace(loaded.map_save, host_directory=directory),
+            )
+            events = EventHub()
+            service = ControlService(
+                settings,
+                DemoSupervisor(settings),
+                DemoBridge(events.publish),
+                events,
+                demo=True,
+            )
+            service.manager.state.feature = "SLAM"
+
+            with self.assertRaisesRegex(ValueError, "missing files"):
+                await service.save_map("empty_map", {"waypoints": [], "routes": []})
+
+            self.assertFalse(Path(directory, "empty_map.ohcar.json").exists())

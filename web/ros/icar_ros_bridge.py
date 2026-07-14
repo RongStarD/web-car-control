@@ -115,6 +115,8 @@ class WebRosBridge(Node):
         )
 
     def _visual_yaw(self, reference_yaw: float) -> tuple[float, str]:
+        if self.control_source == "NAV":
+            return reference_yaw, "tf"
         if self.imu_yaw is None or time.monotonic() - self.imu_seen_at > 0.25:
             self.imu_map_offset = None
             return reference_yaw, "odom"
@@ -293,28 +295,36 @@ class WebRosBridge(Node):
         transform = None
         robot_pose = None
         stamp = self._stamp_time(message)
-        try:
-            transform = self.tf_buffer.lookup_transform(
-                "map", message.header.frame_id, stamp, Duration(seconds=0.05)
-            ).transform
-        except Exception:
-            pass
+        lookup_times = (stamp, Time()) if self.control_source == "NAV" else (stamp,)
+        for lookup_time in lookup_times:
+            try:
+                transform = self.tf_buffer.lookup_transform(
+                    "map", message.header.frame_id, lookup_time, Duration(seconds=0.05)
+                ).transform
+                break
+            except Exception:
+                continue
         if transform is not None:
             for base_frame in ("base_footprint", "base_link"):
-                try:
-                    base_transform = self.tf_buffer.lookup_transform(
-                        "map", base_frame, stamp, Duration(seconds=0.05)
-                    ).transform
-                    robot_pose = {
-                        "x": float(base_transform.translation.x),
-                        "y": float(base_transform.translation.y),
-                        "yaw": self._visual_yaw(
+                for lookup_time in lookup_times:
+                    try:
+                        base_transform = self.tf_buffer.lookup_transform(
+                            "map", base_frame, lookup_time, Duration(seconds=0.05)
+                        ).transform
+                        yaw, yaw_source = self._visual_yaw(
                             self._yaw(base_transform.rotation.z, base_transform.rotation.w)
-                        )[0],
-                    }
+                        )
+                        robot_pose = {
+                            "x": float(base_transform.translation.x),
+                            "y": float(base_transform.translation.y),
+                            "yaw": yaw,
+                            "yaw_source": yaw_source,
+                        }
+                        break
+                    except Exception:
+                        continue
+                if robot_pose is not None:
                     break
-                except Exception:
-                    continue
         stride = max(1, len(message.ranges) // 240)
         points = []
         for index in range(0, len(message.ranges), stride):
@@ -543,6 +553,8 @@ class WebRosBridge(Node):
                 self.localization_initialized = False
                 self.localization_pending = False
                 self._localization_event("waiting_initial_pose")
+            if source != self.control_source:
+                self.imu_map_offset = None
             self.control_source = source
             message.data = source
             self.control_mode.publish(message)

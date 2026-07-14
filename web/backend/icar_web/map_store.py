@@ -24,6 +24,33 @@ class MapStore:
             raise ValueError("Map name must contain only letters, numbers, underscore or dash")
         return self.directory / f"{name}.ohcar.json"
 
+    def _map_file_paths(self, profile: dict[str, Any]) -> tuple[Path, Path] | None:
+        if profile.get("built_in"):
+            return None
+        yaml_name = Path(str(profile.get("yaml_path", ""))).name
+        if not yaml_name or yaml_name != f"{profile['map_name']}.yaml":
+            return self.directory / "__invalid__.yaml", self.directory / "__invalid__.pgm"
+        yaml_path = self.directory / yaml_name
+        return yaml_path, yaml_path.with_suffix(".pgm")
+
+    def missing_files(self, profile: dict[str, Any]) -> list[str]:
+        paths = self._map_file_paths(profile)
+        if paths is None:
+            return []
+        return [path.name for path in paths if not path.is_file()]
+
+    def require_files(self, profile: dict[str, Any]) -> dict[str, Any]:
+        missing = self.missing_files(profile)
+        if missing:
+            names = ", ".join(missing)
+            raise ValueError(
+                f"Map {profile['map_name']} is incomplete; missing files: {names}"
+            )
+        return profile
+
+    def _with_availability(self, profile: dict[str, Any]) -> dict[str, Any]:
+        return {**profile, "available": not self.missing_files(profile)}
+
     def _built_in(self) -> dict[str, Any]:
         return {
             "schema_version": 1,
@@ -166,7 +193,8 @@ class MapStore:
                 except (OSError, ValueError, json.JSONDecodeError):
                     continue
                 profiles[profile["map_name"]] = profile
-        return sorted(profiles.values(), key=lambda item: (not item["built_in"], item["label"]))
+        available = [self._with_availability(profile) for profile in profiles.values()]
+        return sorted(available, key=lambda item: (not item["built_in"], item["label"]))
 
     def get(self, name: str) -> dict[str, Any]:
         path = self._profile_path(name)
@@ -202,8 +230,9 @@ class MapStore:
         if self.active_path.is_file():
             name = self.active_path.read_text(encoding="utf-8").strip()
             try:
-                self.get(name)
-                return name
+                profile = self.get(name)
+                if not self.missing_files(profile):
+                    return name
             except ValueError:
                 pass
         return self.config.default_map_name

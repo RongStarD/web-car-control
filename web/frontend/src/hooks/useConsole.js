@@ -9,6 +9,14 @@ const emptyRuntime = {
   message: '',
 }
 
+const VISUAL_FRAME_KEYS = ['map', 'local_costmap', 'global_costmap', 'pose', 'path', 'scan', 'navigation', 'localization']
+
+function clearVisualFrames(current) {
+  const next = { ...current }
+  VISUAL_FRAME_KEYS.forEach((key) => delete next[key])
+  return next
+}
+
 export function useConsole() {
   const [features, setFeatures] = useState([])
   const [maps, setMaps] = useState([])
@@ -23,6 +31,7 @@ export function useConsole() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const socketRef = useRef(null)
+  const generationRef = useRef(0)
 
   const addLog = useCallback((level, message) => {
     setLogs((current) => [
@@ -36,7 +45,10 @@ export function useConsole() {
     if (payload.features) setFeatures(payload.features)
     if (payload.maps) setMaps(payload.maps)
     if (payload.active_map) setActiveMap(payload.active_map)
-    if (payload.runtime) setRuntime(payload.runtime)
+    if (payload.runtime) {
+      generationRef.current = payload.runtime.generation
+      setRuntime(payload.runtime)
+    }
     if (payload.health) setHealth(payload.health)
     if (payload.bridge) setBridge(payload.bridge)
     if (payload.latest) setData((current) => ({ ...current, ...payload.latest }))
@@ -47,7 +59,13 @@ export function useConsole() {
       applyBootstrap(event)
       return
     }
-    if (event.type === 'status' && event.runtime) setRuntime(event.runtime)
+    if (event.type === 'status' && event.runtime) {
+      if (event.runtime.generation !== generationRef.current) {
+        generationRef.current = event.runtime.generation
+        setData(clearVisualFrames)
+      }
+      setRuntime(event.runtime)
+    }
     else if (event.type === 'health') setHealth(event)
     else if (event.type === 'bridge') setBridge(event)
     else if (event.type === 'log') addLog(event.level || 'INFO', event.message || '')

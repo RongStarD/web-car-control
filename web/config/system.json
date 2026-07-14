@@ -9,7 +9,7 @@
     "command_timeout_seconds": 12,
     "start_settle_seconds": 0.8,
     "health_interval_seconds": 2.0,
-    "readiness_grace_seconds": 35.0,
+    "readiness_grace_seconds": 55.0,
     "stop_inactive_containers": true
   },
   "hardware": {

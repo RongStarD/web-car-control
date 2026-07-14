@@ -40,6 +40,13 @@ class MapStoreTests(unittest.TestCase):
             ],
         }
 
+    def write_map_files(self, name: str) -> None:
+        Path(self.temporary.name, f"{name}.yaml").write_text(
+            f"image: {name}.pgm\nresolution: 0.05\n",
+            encoding="utf-8",
+        )
+        Path(self.temporary.name, f"{name}.pgm").write_bytes(b"P5\n1 1\n255\n\x00")
+
     def test_profile_is_saved_next_to_map_and_round_trips(self) -> None:
         saved = self.store.save_new_map("floor_8", self.profile())
         self.assertEqual(saved["yaml_path"], "/root/maps/floor_8.yaml")
@@ -64,5 +71,20 @@ class MapStoreTests(unittest.TestCase):
 
     def test_active_map_is_persisted(self) -> None:
         self.store.save_new_map("floor_8", self.profile())
+        self.write_map_files("floor_8")
         self.store.set_active("floor_8")
+        self.assertEqual(self.store.active_name(), "floor_8")
+
+    def test_incomplete_map_is_reported_and_not_used_as_active(self) -> None:
+        profile = self.store.save_new_map("floor_8", self.profile())
+        self.store.set_active("floor_8")
+
+        listed = next(item for item in self.store.list_profiles() if item["map_name"] == "floor_8")
+        self.assertFalse(listed["available"])
+        self.assertEqual(self.store.active_name(), "yahboomcar")
+        with self.assertRaisesRegex(ValueError, "floor_8.yaml, floor_8.pgm"):
+            self.store.require_files(profile)
+
+        self.write_map_files("floor_8")
+        self.assertTrue(self.store.list_profiles()[-1]["available"])
         self.assertEqual(self.store.active_name(), "floor_8")

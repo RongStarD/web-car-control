@@ -168,7 +168,11 @@ function MapSelector({ maps, value, onChange, disabled = false }) {
     <label className="field-row">
       <span>地图</span>
       <select value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled}>
-        {maps.map((map) => <option value={map.map_name} key={map.map_name}>{map.label || map.map_name}</option>)}
+        {maps.map((map) => (
+          <option value={map.map_name} key={map.map_name} disabled={map.available === false}>
+            {map.label || map.map_name}{map.available === false ? '（地图文件缺失）' : ''}
+          </option>
+        ))}
       </select>
     </label>
   )
@@ -244,14 +248,16 @@ function MappingControls(props) {
 
 function NavigationControls(props) {
   const active = props.activeFeatureId === props.activeFeature.id
+  const profile = props.maps.find((item) => item.map_name === props.selectedMapName)
   return (
     <>
       <div className="control-section">
         <div className="section-title"><Navigation size={16} />导航地图</div>
         <MapSelector maps={props.maps} value={props.selectedMapName} onChange={props.onMapSelection} disabled={active} />
+        {profile?.available === false && <div className="inline-warning">该地图缺少 YAML/PGM 文件，无法启动导航。</div>}
         <div className="inline-warning">常规导航不会应用地图默认位姿，启动后请手动设置初始位姿。</div>
       </div>
-      {!active && <StartFeature label={`启动${props.activeFeature.label}`} onStart={() => props.onStartFeature(props.activeFeature.id, props.selectedMapName)} busy={props.busy} disabled={!props.selectedMapName} />}
+      {!active && <StartFeature label={`启动${props.activeFeature.label}`} onStart={() => props.onStartFeature(props.activeFeature.id, props.selectedMapName)} busy={props.busy} disabled={!props.selectedMapName || profile?.available === false} />}
       {active && (
         <>
           <div className="control-section">
@@ -361,9 +367,10 @@ function TaskControls(props) {
       <div className="control-section">
         <div className="section-title"><ListOrdered size={16} />任务地图</div>
         <MapSelector maps={props.maps} value={props.selectedMapName} onChange={props.onMapSelection} disabled={active} />
+        {profile?.available === false && <div className="inline-warning">该地图缺少 YAML/PGM 文件，无法启动任务。</div>}
         {!profile?.default_pose_id && <div className="inline-warning">任务地图必须先在建图模块记录默认位姿。</div>}
       </div>
-      {!active && <StartFeature label="启动路线任务" onStart={() => props.onStartFeature('TASK_ROUTE', props.selectedMapName)} busy={props.busy} disabled={!profile?.default_pose_id} />}
+      {!active && <StartFeature label="启动路线任务" onStart={() => props.onStartFeature('TASK_ROUTE', props.selectedMapName)} busy={props.busy} disabled={!profile?.default_pose_id || profile?.available === false} />}
       <div className="control-section">
         <div className="section-title"><ListOrdered size={16} />路线编排</div>
         <label className="field-row"><span>路线</span><select value={routeId} onChange={(event) => selectRoute(event.target.value)}><option value="">新建路线</option>{routes.map((route) => <option value={route.id} key={route.id}>{route.name}</option>)}</select></label>
