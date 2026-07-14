@@ -169,3 +169,30 @@ class ControlServiceTests(unittest.IsolatedAsyncioTestCase):
                 await service.save_map("empty_map", {"waypoints": [], "routes": []})
 
             self.assertFalse(Path(directory, "empty_map.ohcar.json").exists())
+
+    async def test_save_map_rejects_unchanged_existing_files(self) -> None:
+        loaded = load_settings(CONFIG)
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(
+                loaded,
+                map_save=replace(loaded.map_save, host_directory=directory),
+            )
+            events = EventHub()
+            service = ControlService(
+                settings,
+                DemoSupervisor(settings),
+                DemoBridge(events.publish),
+                events,
+                demo=True,
+            )
+            Path(directory, "stale_map.yaml").write_text(
+                "image: stale_map.pgm\nresolution: 0.05\n",
+                encoding="utf-8",
+            )
+            Path(directory, "stale_map.pgm").write_bytes(b"P5\n1 1\n255\n\x00")
+            service.manager.state.feature = "SLAM"
+
+            with self.assertRaisesRegex(ValueError, "stale files"):
+                await service.save_map("stale_map", {"waypoints": [], "routes": []})
+
+            self.assertFalse(Path(directory, "stale_map.ohcar.json").exists())

@@ -426,7 +426,7 @@
   "map_save": {
     "target": "yahboom_nav",
     "allowed_features": ["SLAM"],
-    "command_template": "ros2 run nav2_map_server map_saver_cli -f /root/maps/{map_name}",
+    "command_template": "ros2 run nav2_map_server map_saver_cli -f /root/maps/{map_name} --ros-args -p save_map_timeout:=15000 -p map_subscribe_transient_local:=true",
     "timeout_seconds": 45,
     "host_directory": "/home/jetson/maps",
     "container_directory": "/root/maps",

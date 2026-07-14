@@ -88,3 +88,18 @@ class MapStoreTests(unittest.TestCase):
         self.write_map_files("floor_8")
         self.assertTrue(self.store.list_profiles()[-1]["available"])
         self.assertEqual(self.store.active_name(), "floor_8")
+
+    def test_save_must_update_existing_map_files(self) -> None:
+        profile = self.store.prepare_new_map("floor_8", self.profile())
+        self.write_map_files("floor_8")
+        previous = self.store.file_signatures(profile)
+
+        with self.assertRaisesRegex(ValueError, "stale files"):
+            self.store.require_updated_files(profile, previous)
+
+        Path(self.temporary.name, "floor_8.pgm").write_bytes(b"P5\n2 1\n255\n\x00\x00")
+        Path(self.temporary.name, "floor_8.yaml").write_text(
+            "image: floor_8.pgm\nresolution: 0.1\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(self.store.require_updated_files(profile, previous), profile)

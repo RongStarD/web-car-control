@@ -48,6 +48,37 @@ class MapStore:
             )
         return profile
 
+    def file_signatures(self, profile: dict[str, Any]) -> dict[str, tuple[int, int]]:
+        paths = self._map_file_paths(profile)
+        if paths is None:
+            return {}
+        signatures: dict[str, tuple[int, int]] = {}
+        for path in paths:
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            signatures[path.name] = (stat.st_mtime_ns, stat.st_size)
+        return signatures
+
+    def require_updated_files(
+        self,
+        profile: dict[str, Any],
+        previous: dict[str, tuple[int, int]],
+    ) -> dict[str, Any]:
+        self.require_files(profile)
+        current = self.file_signatures(profile)
+        unchanged = [
+            name for name, signature in current.items()
+            if previous.get(name) == signature
+        ]
+        if unchanged:
+            names = ", ".join(unchanged)
+            raise ValueError(
+                f"Map {profile['map_name']} was not updated; stale files: {names}"
+            )
+        return profile
+
     def _with_availability(self, profile: dict[str, Any]) -> dict[str, Any]:
         return {**profile, "available": not self.missing_files(profile)}
 

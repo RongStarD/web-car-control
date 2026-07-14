@@ -338,6 +338,7 @@ class ControlService:
         if self.manager.state.feature not in self.settings.map_save.allowed_features:
             raise ValueError("Map save is only available while mapping")
         profile = self.maps.prepare_new_map(map_name, payload)
+        previous_files = self.maps.file_signatures(profile)
         command = self.settings.map_save.command_template.format(map_name=map_name)
         result = await self.supervisor.run_once(
             self.settings.map_save.target,
@@ -345,7 +346,7 @@ class ControlService:
             command,
             self.settings.map_save.timeout_seconds,
         )
-        self.maps.require_files(profile)
+        self.maps.require_updated_files(profile, previous_files)
         self.maps.commit(profile)
         await self._select_map_profile(profile, keep_target_running=True)
         self.maps.set_active(map_name)

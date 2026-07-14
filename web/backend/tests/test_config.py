@@ -38,6 +38,8 @@ class ConfigurationTests(unittest.TestCase):
             command = self.settings.components[name].command
             self.assertEqual(command, "bash /opt/icar-web/ros/start_map_server.sh")
         self.assertIn("/root/maps/{map_name}", self.settings.map_save.command_template)
+        self.assertIn("save_map_timeout:=15000", self.settings.map_save.command_template)
+        self.assertIn("map_subscribe_transient_local:=true", self.settings.map_save.command_template)
         self.assertTrue(self.settings.map_save.default_map_yaml.startswith("/root/"))
 
     def test_velocity_sources_are_remapped(self) -> None:
