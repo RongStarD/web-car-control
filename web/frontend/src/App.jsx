@@ -86,7 +86,7 @@ export default function App() {
     setSelectedFeatureId(featureId)
     setRoutePreviewIds([])
     if (featureId === 'SLAM') setInteraction('waypoint')
-    else if (['NAV_DWA', 'NAV_TEB'].includes(featureId)) setInteraction('goal')
+    else if (['NAV_DWA', 'NAV_TEB'].includes(featureId)) setInteraction('initial_pose')
     else setInteraction('pan')
     if (!CONFIRMED_FEATURES.has(featureId)) {
       consoleState.setFeature(featureId).catch(() => {})
@@ -96,11 +96,16 @@ export default function App() {
   const startFeature = async (featureId, mapName = '') => {
     const profile = consoleState.maps.find((item) => item.map_name === mapName)
     if (mapName && mapName !== consoleState.activeMap) await consoleState.activateMap(mapName)
-    setPendingInitialization({
-      feature: featureId,
-      mapName,
-      hasDefaultPose: Boolean(profile?.default_pose_id),
-    })
+    if (featureId === 'TASK_ROUTE') {
+      setPendingInitialization({
+        feature: featureId,
+        mapName,
+        hasDefaultPose: Boolean(profile?.default_pose_id),
+      })
+    } else {
+      setPendingInitialization(null)
+      if (['NAV_DWA', 'NAV_TEB'].includes(featureId)) setInteraction('initial_pose')
+    }
     await consoleState.setFeature(featureId)
   }
 

@@ -244,13 +244,12 @@ function MappingControls(props) {
 
 function NavigationControls(props) {
   const active = props.activeFeatureId === props.activeFeature.id
-  const profile = props.maps.find((item) => item.map_name === props.selectedMapName)
   return (
     <>
       <div className="control-section">
         <div className="section-title"><Navigation size={16} />导航地图</div>
         <MapSelector maps={props.maps} value={props.selectedMapName} onChange={props.onMapSelection} disabled={active} />
-        {!profile?.default_pose_id && <div className="inline-warning">该地图没有默认位姿，启动后需手动设置。</div>}
+        <div className="inline-warning">常规导航不会应用地图默认位姿，启动后请手动设置初始位姿。</div>
       </div>
       {!active && <StartFeature label={`启动${props.activeFeature.label}`} onStart={() => props.onStartFeature(props.activeFeature.id, props.selectedMapName)} busy={props.busy} disabled={!props.selectedMapName} />}
       {active && (
