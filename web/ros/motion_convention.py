@@ -7,6 +7,10 @@ import time
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import String
+
+from motion_policy import velocity_source
 
 LINEAR_RESPONSE_SECONDS = 0.12
 ANGULAR_RESPONSE_SECONDS = 0.25
@@ -31,6 +35,7 @@ class MotionConventionAdapter(Node):
         self.latest_command = Twist()
         self.latest_feedback = Twist()
         self.estimated_velocity = Twist()
+        self.control_mode = "IDLE"
         self.command_seen_at = float("-inf")
         self.feedback_seen_at = float("-inf")
         self.velocity_updated_at = time.monotonic()
@@ -38,6 +43,10 @@ class MotionConventionAdapter(Node):
         self.ros_velocity = self.create_publisher(Twist, "/vel_raw", 20)
         self.create_subscription(Twist, "/cmd_vel", self._command, 20)
         self.create_subscription(Twist, "/vel_raw/hardware", self._feedback, 20)
+        control_qos = QoSProfile(depth=1)
+        control_qos.reliability = ReliabilityPolicy.RELIABLE
+        control_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self.create_subscription(String, "/web/control_mode", self._control_mode, control_qos)
         self.create_timer(0.04, self._publish_velocity)
 
     def _command(self, message: Twist) -> None:
@@ -49,14 +58,31 @@ class MotionConventionAdapter(Node):
         self.latest_feedback = copied_twist(message)
         self.feedback_seen_at = time.monotonic()
 
+    def _control_mode(self, message: String) -> None:
+        requested = message.data.upper()
+        self.control_mode = requested if requested in {"IDLE", "MANUAL", "NAV", "BEHAVIOR"} else "IDLE"
+
     def _publish_velocity(self) -> None:
         now = time.monotonic()
-        if now - self.command_seen_at <= self.command_timeout:
+        source = velocity_source(
+            self.control_mode,
+            now - self.command_seen_at,
+            now - self.feedback_seen_at,
+            self.command_timeout,
+            self.feedback_timeout,
+        )
+        if source == "command":
             target = self.latest_command
-        elif now - self.feedback_seen_at <= self.feedback_timeout:
+        elif source == "feedback":
             target = self.latest_feedback
         else:
             target = Twist()
+
+        if self.control_mode == "NAV":
+            self.estimated_velocity = copied_twist(target)
+            self.velocity_updated_at = now
+            self.ros_velocity.publish(copied_twist(target))
+            return
 
         elapsed = min(0.2, max(0.0, now - self.velocity_updated_at))
         self.velocity_updated_at = now
