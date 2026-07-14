@@ -233,9 +233,7 @@ export default function MapCanvas({ data, activeFeatureId, interaction, onMapPoi
       context.stroke()
     }
 
-    const pose = activeFeatureId === 'SLAM' && data.scan?.robot_pose
-      ? data.scan.robot_pose
-      : data.pose
+    const pose = data.scan?.robot_pose || data.pose
     const scanAnchor = data.scan?.origin || pose
     const localizationReady = !['NAV_DWA', 'NAV_TEB', 'TASK_ROUTE'].includes(activeFeatureId)
       || data.scan?.localized !== false
