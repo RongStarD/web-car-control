@@ -1,0 +1,20 @@
+[Unit]
+Description=OHCar Web Orchestrator
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=simple
+User=jetson
+Group=jetson
+SupplementaryGroups=docker
+WorkingDirectory=__PROJECT_ROOT__/web/backend
+Environment=PYTHONUNBUFFERED=1
+Environment=ICAR_CONFIG=__PROJECT_ROOT__/web/config/system.json
+ExecStart=__PROJECT_ROOT__/.venv/bin/python -m icar_web --frontend __PROJECT_ROOT__/web/frontend/dist
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

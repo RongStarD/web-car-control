@@ -1,0 +1,446 @@
+{
+  "schema_version": 2,
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080
+  },
+  "runtime": {
+    "docker_binary": "docker",
+    "command_timeout_seconds": 12,
+    "start_settle_seconds": 0.8,
+    "health_interval_seconds": 2.0,
+    "readiness_grace_seconds": 35.0,
+    "stop_inactive_containers": true
+  },
+  "hardware": {
+    "base_serial": {
+      "label": "底盘串口",
+      "host_path": "/dev/myserial",
+      "required_for_motion": true
+    },
+    "rplidar": {
+      "label": "A1 雷达",
+      "host_path": "/dev/rplidar",
+      "required_for_motion": false
+    },
+    "camera": {
+      "label": "相机",
+      "host_path": "/dev/video0",
+      "required_for_motion": false
+    }
+  },
+  "targets": {
+    "yahboom_nav": {
+      "kind": "docker",
+      "container": "nifty_dirac",
+      "runner_path": "/opt/icar-web/ros/managed_process.sh",
+      "bridge_path": "/opt/icar-web/ros/icar_ros_bridge.py",
+      "hardware": ["base_serial", "rplidar", "camera"]
+    },
+    "icar_behavior": {
+      "kind": "docker",
+      "container": "sharp_maxwell",
+      "runner_path": "/opt/icar-web/ros/managed_process.sh",
+      "bridge_path": "/opt/icar-web/ros/icar_ros_bridge.py",
+      "hardware": ["base_serial", "rplidar", "camera"]
+    }
+  },
+  "components": {
+    "nav_velocity_arbiter": {
+      "target": "yahboom_nav",
+      "command": "python3 -u /opt/icar-web/ros/velocity_arbiter.py",
+      "nodes": ["/web_velocity_arbiter"],
+      "topics": ["/cmd_vel"],
+      "resources": []
+    },
+    "nav_motion_adapter": {
+      "target": "yahboom_nav",
+      "command": "python3 -u /opt/icar-web/ros/motion_convention.py",
+      "nodes": ["/web_motion_convention"],
+      "topics": ["/cmd_vel/hardware", "/vel_raw"],
+      "resources": [],
+      "depends_on": ["nav_velocity_arbiter"]
+    },
+    "nav_driver": {
+      "target": "yahboom_nav",
+      "command": "ros2 run yahboomcar_bringup Mcnamu_driver_X3 --ros-args -r /cmd_vel:=/cmd_vel/hardware -r /vel_raw:=/vel_raw/hardware",
+      "nodes": ["/driver_node"],
+      "topics": ["/vel_raw/hardware", "/voltage", "/imu/data_raw"],
+      "resources": ["base_serial"],
+      "depends_on": ["nav_motion_adapter"]
+    },
+    "nav_base_odometry": {
+      "target": "yahboom_nav",
+      "command": "ros2 run yahboomcar_base_node base_node_X3 --ros-args -p pub_odom_tf:=false",
+      "nodes": ["/base_node"],
+      "topics": ["/odom_raw"],
+      "resources": [],
+      "depends_on": ["nav_driver"]
+    },
+    "nav_imu_filter": {
+      "target": "yahboom_nav",
+      "command": "ros2 run imu_filter_madgwick imu_filter_madgwick_node --ros-args --params-file /root/yahboomcar_ros2_ws/yahboomcar_ws/install/yahboomcar_bringup/share/yahboomcar_bringup/param/imu_filter_param.yaml",
+      "nodes": ["/imu_filter_madgwick"],
+      "topics": ["/imu/data"],
+      "resources": [],
+      "depends_on": ["nav_driver"]
+    },
+    "nav_ekf": {
+      "target": "yahboom_nav",
+      "command": "ros2 run robot_localization ekf_node --ros-args -r __node:=ekf_filter_node --params-file /root/yahboomcar_ros2_ws/software/library_ws/install/robot_localization/share/robot_localization/params/ekf_x1_x3.yaml -r /odometry/filtered:=/odom",
+      "nodes": ["/ekf_filter_node"],
+      "topics": ["/odom"],
+      "resources": [],
+      "depends_on": ["nav_base_odometry", "nav_imu_filter"]
+    },
+    "nav_robot_state": {
+      "target": "yahboom_nav",
+      "command": "ros2 run robot_state_publisher robot_state_publisher /root/yahboomcar_ros2_ws/yahboomcar_ws/install/yahboomcar_description/share/yahboomcar_description/urdf/yahboomcar_X3.urdf",
+      "nodes": ["/robot_state_publisher"],
+      "topics": ["/tf", "/tf_static"],
+      "resources": [],
+      "depends_on": ["nav_driver"]
+    },
+    "nav_lidar": {
+      "target": "yahboom_nav",
+      "command": "ros2 run sllidar_ros2 sllidar_node --ros-args -r __node:=sllidar_node -p serial_port:=/dev/rplidar -p serial_baudrate:=115200 -p frame_id:=laser -p inverted:=false -p angle_compensate:=true",
+      "nodes": ["/sllidar_node"],
+      "topics": ["/scan"],
+      "resources": ["rplidar"]
+    },
+    "nav_lidar_tf": {
+      "target": "yahboom_nav",
+      "command": "ros2 run tf2_ros static_transform_publisher -0.0455 5.258E-05 0.3059 3.14 0 0 base_link laser --ros-args -r __node:=laser_static_tf",
+      "nodes": ["/laser_static_tf"],
+      "topics": ["/tf_static"],
+      "resources": [],
+      "depends_on": ["nav_robot_state", "nav_lidar"]
+    },
+    "nav_slam_gmapping": {
+      "target": "yahboom_nav",
+      "command": "ros2 run slam_gmapping slam_gmapping",
+      "nodes": ["/slam_gmapping"],
+      "topics": ["/map", "/map_metadata"],
+      "resources": [],
+      "depends_on": ["nav_ekf", "nav_lidar_tf"]
+    },
+    "nav2_map_server_dwa": {
+      "target": "yahboom_nav",
+      "command": "bash /opt/icar-web/ros/start_map_server.sh",
+      "nodes": ["/map_server"],
+      "topics": ["/map"],
+      "resources": [],
+      "lifecycle_node": "/map_server",
+      "depends_on": ["nav_lidar_tf"]
+    },
+    "nav2_amcl_dwa": {
+      "target": "yahboom_nav",
+      "command": "ros2 run nav2_amcl amcl --ros-args --params-file /root/yahboomcar_ros2_ws/yahboomcar_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/dwa_nav_params.yaml -p set_initial_pose:=true -p initial_pose.x:=0.0 -p initial_pose.y:=0.0 -p initial_pose.z:=0.0 -p initial_pose.yaw:=0.0 -r /tf:=tf -r /tf_static:=tf_static",
+      "nodes": ["/amcl"],
+      "topics": ["/amcl_pose"],
+      "resources": [],
+      "lifecycle_node": "/amcl",
+      "depends_on": ["nav2_map_server_dwa", "nav_ekf", "nav_lidar"]
+    },
+    "nav2_controller_dwa": {
+      "target": "yahboom_nav",
+      "command": "ros2 run nav2_controller controller_server --ros-args --params-file /root/yahboomcar_ros2_ws/yahboomcar_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/dwa_nav_params.yaml -r /tf:=tf -r /tf_static:=tf_static -r cmd_vel:=/cmd_vel/nav",
+      "nodes": ["/controller_server"],
+      "topics": ["/local_costmap/costmap"],
+      "resources": [],
+      "lifecycle_node": "/controller_server",
+      "depends_on": ["nav2_amcl_dwa"]
+    },
+    "nav2_planner_dwa": {
+      "target": "yahboom_nav",
+      "command": "ros2 run nav2_planner planner_server --ros-args --params-file /root/yahboomcar_ros2_ws/yahboomcar_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/dwa_nav_params.yaml -r /tf:=tf -r /tf_static:=tf_static",
+      "nodes": ["/nav2_planner"],
+      "topics": ["/global_costmap/costmap", "/plan"],
+      "resources": [],
+      "lifecycle_node": "/nav2_planner",
+      "depends_on": ["nav2_amcl_dwa"]
+    },
+    "nav2_recoveries_dwa": {
+      "target": "yahboom_nav",
+      "command": "ros2 run nav2_recoveries recoveries_server --ros-args --params-file /root/yahboomcar_ros2_ws/yahboomcar_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/dwa_nav_params.yaml -r /tf:=tf -r /tf_static:=tf_static -r cmd_vel:=/cmd_vel/nav",
+      "nodes": ["/recoveries_server"],
+      "topics": [],
+      "resources": [],
+      "lifecycle_node": "/recoveries_server",
+      "depends_on": ["nav2_controller_dwa"]
+    },
+    "nav2_bt_dwa": {
+      "target": "yahboom_nav",
+      "command": "cd /opt/ros/foxy/share/nav2_bt_navigator/behavior_trees && ros2 run nav2_bt_navigator bt_navigator --ros-args --params-file /root/yahboomcar_ros2_ws/yahboomcar_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/dwa_nav_params.yaml -r /tf:=tf -r /tf_static:=tf_static",
+      "nodes": ["/bt_navigator"],
+      "topics": [],
+      "resources": [],
+      "lifecycle_node": "/bt_navigator",
+      "depends_on": ["nav2_planner_dwa", "nav2_recoveries_dwa"]
+    },
+    "nav2_waypoints_dwa": {
+      "target": "yahboom_nav",
+      "command": "ros2 run nav2_waypoint_follower waypoint_follower --ros-args --params-file /root/yahboomcar_ros2_ws/yahboomcar_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/dwa_nav_params.yaml -r /tf:=tf -r /tf_static:=tf_static",
+      "nodes": ["/WaypointFollower"],
+      "topics": [],
+      "resources": [],
+      "lifecycle_node": "/WaypointFollower",
+      "depends_on": ["nav2_bt_dwa"]
+    },
+    "nav2_map_server_teb": {
+      "target": "yahboom_nav",
+      "command": "bash /opt/icar-web/ros/start_map_server.sh",
+      "nodes": ["/map_server"],
+      "topics": ["/map"],
+      "resources": [],
+      "lifecycle_node": "/map_server",
+      "depends_on": ["nav_lidar_tf"]
+    },
+    "nav2_amcl_teb": {
+      "target": "yahboom_nav",
+      "command": "ros2 run nav2_amcl amcl --ros-args --params-file /root/yahboomcar_ros2_ws/yahboomcar_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/teb_nav_params.yaml -p set_initial_pose:=true -p initial_pose.x:=0.0 -p initial_pose.y:=0.0 -p initial_pose.z:=0.0 -p initial_pose.yaw:=0.0 -r /tf:=tf -r /tf_static:=tf_static",
+      "nodes": ["/amcl"],
+      "topics": ["/amcl_pose"],
+      "resources": [],
+      "lifecycle_node": "/amcl",
+      "depends_on": ["nav2_map_server_teb", "nav_ekf", "nav_lidar"]
+    },
+    "nav2_controller_teb": {
+      "target": "yahboom_nav",
+      "command": "ros2 run nav2_controller controller_server --ros-args --params-file /root/yahboomcar_ros2_ws/yahboomcar_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/teb_nav_params.yaml -r /tf:=tf -r /tf_static:=tf_static -r cmd_vel:=/cmd_vel/nav",
+      "nodes": ["/controller_server"],
+      "topics": ["/local_costmap/costmap"],
+      "resources": [],
+      "lifecycle_node": "/controller_server",
+      "depends_on": ["nav2_amcl_teb"]
+    },
+    "nav2_planner_teb": {
+      "target": "yahboom_nav",
+      "command": "ros2 run nav2_planner planner_server --ros-args --params-file /root/yahboomcar_ros2_ws/yahboomcar_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/teb_nav_params.yaml -r /tf:=tf -r /tf_static:=tf_static",
+      "nodes": ["/nav2_planner"],
+      "topics": ["/global_costmap/costmap", "/plan"],
+      "resources": [],
+      "lifecycle_node": "/nav2_planner",
+      "depends_on": ["nav2_amcl_teb"]
+    },
+    "nav2_recoveries_teb": {
+      "target": "yahboom_nav",
+      "command": "ros2 run nav2_recoveries recoveries_server --ros-args --params-file /root/yahboomcar_ros2_ws/yahboomcar_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/teb_nav_params.yaml -r /tf:=tf -r /tf_static:=tf_static -r cmd_vel:=/cmd_vel/nav",
+      "nodes": ["/recoveries_server"],
+      "topics": [],
+      "resources": [],
+      "lifecycle_node": "/recoveries_server",
+      "depends_on": ["nav2_controller_teb"]
+    },
+    "nav2_bt_teb": {
+      "target": "yahboom_nav",
+      "command": "cd /opt/ros/foxy/share/nav2_bt_navigator/behavior_trees && ros2 run nav2_bt_navigator bt_navigator --ros-args --params-file /root/yahboomcar_ros2_ws/yahboomcar_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/teb_nav_params.yaml -r /tf:=tf -r /tf_static:=tf_static",
+      "nodes": ["/bt_navigator"],
+      "topics": [],
+      "resources": [],
+      "lifecycle_node": "/bt_navigator",
+      "depends_on": ["nav2_planner_teb", "nav2_recoveries_teb"]
+    },
+    "nav2_waypoints_teb": {
+      "target": "yahboom_nav",
+      "command": "ros2 run nav2_waypoint_follower waypoint_follower --ros-args --params-file /root/yahboomcar_ros2_ws/yahboomcar_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/teb_nav_params.yaml -r /tf:=tf -r /tf_static:=tf_static",
+      "nodes": ["/WaypointFollower"],
+      "topics": [],
+      "resources": [],
+      "lifecycle_node": "/WaypointFollower",
+      "depends_on": ["nav2_bt_teb"]
+    },
+    "nav_route_task": {
+      "target": "yahboom_nav",
+      "command": "python3 -u /opt/icar-web/ros/task_guard.py",
+      "nodes": ["/web_route_task"],
+      "topics": ["/web/route_task/status"],
+      "resources": [],
+      "depends_on": ["nav2_waypoints_dwa"]
+    },
+    "behavior_velocity_arbiter": {
+      "target": "icar_behavior",
+      "command": "python3 -u /opt/icar-web/ros/velocity_arbiter.py",
+      "nodes": ["/web_velocity_arbiter"],
+      "topics": ["/cmd_vel"],
+      "resources": []
+    },
+    "behavior_motion_adapter": {
+      "target": "icar_behavior",
+      "command": "python3 -u /opt/icar-web/ros/motion_convention.py",
+      "nodes": ["/web_motion_convention"],
+      "topics": ["/cmd_vel/hardware", "/vel_raw"],
+      "resources": [],
+      "depends_on": ["behavior_velocity_arbiter"]
+    },
+    "behavior_driver": {
+      "target": "icar_behavior",
+      "command": "ros2 run icar_bringup Mcnamu_driver_X3 --ros-args -r /cmd_vel:=/cmd_vel/hardware -r /vel_raw:=/vel_raw/hardware",
+      "nodes": ["/driver_node"],
+      "topics": ["/vel_raw/hardware", "/voltage", "/imu/data_raw"],
+      "resources": ["base_serial"],
+      "depends_on": ["behavior_motion_adapter"]
+    },
+    "behavior_lidar": {
+      "target": "icar_behavior",
+      "command": "ros2 run sllidar_ros2 sllidar_node --ros-args -r __node:=sllidar_node -p serial_port:=/dev/rplidar -p serial_baudrate:=115200 -p frame_id:=laser -p inverted:=false -p angle_compensate:=true",
+      "nodes": ["/sllidar_node"],
+      "topics": ["/scan"],
+      "resources": ["rplidar"]
+    },
+    "behavior_laser_avoid": {
+      "target": "icar_behavior",
+      "command": "ros2 run icar_laser laser_Avoidance_a1_X3 --ros-args -r /cmd_vel:=/cmd_vel/behavior",
+      "nodes": ["/laser_Avoidance_a1"],
+      "topics": ["/cmd_vel/behavior"],
+      "resources": [],
+      "depends_on": ["behavior_driver", "behavior_lidar"]
+    },
+    "behavior_laser_track": {
+      "target": "icar_behavior",
+      "command": "ros2 run icar_laser laser_Tracker_a1_X3 --ros-args -r /cmd_vel:=/cmd_vel/behavior",
+      "nodes": ["/laser_Tracker_a1"],
+      "topics": ["/cmd_vel/behavior"],
+      "resources": [],
+      "depends_on": ["behavior_driver", "behavior_lidar"]
+    },
+    "behavior_laser_guard": {
+      "target": "icar_behavior",
+      "command": "ros2 run icar_laser laser_Warning_a1_X3 --ros-args -r /cmd_vel:=/cmd_vel/behavior",
+      "nodes": ["/laser_Warnning_a1"],
+      "topics": ["/cmd_vel/behavior", "/Buzzer"],
+      "resources": [],
+      "depends_on": ["behavior_driver", "behavior_lidar"]
+    },
+    "behavior_astra_camera": {
+      "target": "icar_behavior",
+      "command": "ros2 launch astra_camera astra.launch.xml",
+      "nodes": ["/camera/camera"],
+      "topics": ["/camera/depth/image_raw"],
+      "resources": ["camera"]
+    },
+    "behavior_color_identify": {
+      "target": "icar_behavior",
+      "command": "ros2 run icar_astra colorHSV",
+      "nodes": ["/ColorIdentify"],
+      "topics": ["/Current_point"],
+      "resources": ["camera"],
+      "depends_on": ["behavior_astra_camera"]
+    },
+    "behavior_color_tracker": {
+      "target": "icar_behavior",
+      "command": "ros2 run icar_astra colorTracker --ros-args -r /cmd_vel:=/cmd_vel/behavior",
+      "nodes": ["/ColorTracker"],
+      "topics": ["/cmd_vel/behavior"],
+      "resources": [],
+      "depends_on": ["behavior_driver", "behavior_astra_camera", "behavior_color_identify"]
+    }
+  },
+  "features": {
+    "IDLE": {
+      "label": "待机",
+      "group": "system",
+      "surface": "overview",
+      "components": [],
+      "control_source": "IDLE",
+      "enabled": true
+    },
+    "WEB_MANUAL": {
+      "label": "人工遥控",
+      "group": "control",
+      "surface": "manual",
+      "components": ["nav_driver", "nav_base_odometry", "nav_imu_filter", "nav_ekf", "nav_robot_state", "nav_lidar", "nav_lidar_tf"],
+      "control_source": "MANUAL",
+      "enabled": true
+    },
+    "SLAM": {
+      "label": "地图构建",
+      "group": "mapping",
+      "surface": "mapping",
+      "components": ["nav_slam_gmapping"],
+      "control_source": "MANUAL",
+      "enabled": true
+    },
+    "NAV_DWA": {
+      "label": "DWA 导航",
+      "group": "navigation",
+      "surface": "navigation",
+      "components": ["nav2_controller_dwa", "nav2_planner_dwa", "nav2_recoveries_dwa", "nav2_bt_dwa", "nav2_waypoints_dwa"],
+      "control_source": "NAV",
+      "enabled": true
+    },
+    "NAV_TEB": {
+      "label": "TEB 导航",
+      "group": "navigation",
+      "surface": "navigation",
+      "components": ["nav2_controller_teb", "nav2_planner_teb", "nav2_recoveries_teb", "nav2_bt_teb", "nav2_waypoints_teb"],
+      "control_source": "NAV",
+      "enabled": true
+    },
+    "LASER_AVOID": {
+      "label": "雷达避障",
+      "group": "behavior",
+      "surface": "behavior",
+      "components": ["behavior_laser_avoid"],
+      "control_source": "BEHAVIOR",
+      "enabled": true,
+      "visible": false
+    },
+    "LASER_TRACK": {
+      "label": "雷达跟随",
+      "group": "behavior",
+      "surface": "behavior",
+      "components": ["behavior_laser_track"],
+      "control_source": "BEHAVIOR",
+      "enabled": true,
+      "visible": false
+    },
+    "LASER_GUARD": {
+      "label": "雷达警戒",
+      "group": "behavior",
+      "surface": "behavior",
+      "components": ["behavior_laser_guard"],
+      "control_source": "BEHAVIOR",
+      "enabled": true,
+      "visible": false
+    },
+    "VISUAL_TRACK": {
+      "label": "视觉跟随",
+      "group": "behavior",
+      "surface": "vision",
+      "components": ["behavior_color_tracker"],
+      "control_source": "BEHAVIOR",
+      "enabled": false,
+      "visible": false,
+      "blocked_reason": "ColorIdentify 直接打开 /dev/video0，与 Astra 驱动存在相机占用冲突，需实车改造并验收后启用。"
+    },
+    "TASK_ROUTE": {
+      "label": "任务",
+      "group": "behavior",
+      "surface": "task",
+      "components": ["nav_route_task"],
+      "control_source": "NAV",
+      "enabled": true
+    }
+  },
+  "map_save": {
+    "target": "yahboom_nav",
+    "allowed_features": ["SLAM"],
+    "command_template": "ros2 run nav2_map_server map_saver_cli -f /root/maps/{map_name}",
+    "timeout_seconds": 45,
+    "host_directory": "/home/jetson/maps",
+    "container_directory": "/root/maps",
+    "default_map_name": "yahboomcar",
+    "default_map_yaml": "/root/yahboomcar_ros2_ws/yahboomcar_ws/install/yahboomcar_nav/share/yahboomcar_nav/maps/yahboomcar.yaml",
+    "activate_command_template": "bash /opt/icar-web/ros/select_map.sh {yaml_path}"
+  },
+  "health_groups": {
+    "底盘": ["/driver_node", "/base_node"],
+    "定位": ["/ekf_filter_node", "/amcl"],
+    "雷达": ["/sllidar_node"],
+    "建图": ["/slam_gmapping"],
+    "导航": ["/controller_server", "/nav2_planner", "/bt_navigator"],
+    "安全仲裁": ["/web_velocity_arbiter"],
+    "任务": ["/web_route_task"]
+  }
+}

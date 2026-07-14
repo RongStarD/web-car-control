@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "icar-web-backend"
+version = "0.1.0"
+description = "Whitelisted Web process manager for the iCar ROS 2 platform"
+requires-python = ">=3.8"
+dependencies = ["aiohttp>=3.9,<3.11"]
+
+[project.scripts]
+icar-web = "icar_web.app:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["icar_web*"]

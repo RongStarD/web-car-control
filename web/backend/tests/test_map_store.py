@@ -1,0 +1,68 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from dataclasses import replace
+from pathlib import Path
+
+from icar_web.config import load_settings
+from icar_web.map_store import MapStore
+
+
+CONFIG = Path(__file__).resolve().parents[2] / "config" / "system.json"
+
+
+class MapStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        settings = load_settings(CONFIG)
+        config = replace(settings.map_save, host_directory=self.temporary.name)
+        self.store = MapStore(config)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    @staticmethod
+    def profile() -> dict:
+        return {
+            "label": "Hotel floor",
+            "waypoints": [
+                {"id": "kitchen", "name": "Kitchen", "x": 1, "y": 2, "yaw": 0.5},
+                {"id": "room_808", "name": "Room 808", "x": 6, "y": 4, "yaw": 1.2},
+            ],
+            "default_pose_id": "kitchen",
+            "routes": [
+                {
+                    "id": "delivery_808",
+                    "name": "Delivery 808",
+                    "waypoint_ids": ["kitchen", "room_808", "kitchen"],
+                }
+            ],
+        }
+
+    def test_profile_is_saved_next_to_map_and_round_trips(self) -> None:
+        saved = self.store.save_new_map("floor_8", self.profile())
+        self.assertEqual(saved["yaml_path"], "/root/maps/floor_8.yaml")
+        self.assertTrue(Path(self.temporary.name, "floor_8.ohcar.json").is_file())
+        loaded = self.store.get("floor_8")
+        self.assertEqual(loaded["default_pose_id"], "kitchen")
+        self.assertEqual(
+            loaded["routes"][0]["waypoint_ids"],
+            ["kitchen", "room_808", "kitchen"],
+        )
+
+    def test_default_pose_and_routes_must_reference_recorded_points(self) -> None:
+        invalid_default = self.profile()
+        invalid_default["default_pose_id"] = "missing"
+        with self.assertRaisesRegex(ValueError, "default_pose_id"):
+            self.store.prepare_new_map("floor_8", invalid_default)
+
+        invalid_route = self.profile()
+        invalid_route["routes"][0]["waypoint_ids"] = ["kitchen", "missing"]
+        with self.assertRaisesRegex(ValueError, "unknown waypoints"):
+            self.store.prepare_new_map("floor_8", invalid_route)
+
+    def test_active_map_is_persisted(self) -> None:
+        self.store.save_new_map("floor_8", self.profile())
+        self.store.set_active("floor_8")
+        self.assertEqual(self.store.active_name(), "floor_8")
